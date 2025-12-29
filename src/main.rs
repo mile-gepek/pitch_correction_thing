@@ -1,5 +1,3 @@
-#![feature(macro_metavar_expr)]
-
 mod audio;
 
 use std::{thread, time::Duration};
@@ -94,7 +92,7 @@ impl State {
                 let frequency = frequency_reader.read();
                 _ = output.send(Message::FrequencyChange(*frequency)).await;
                 // Not sleeping makes the repeated sending effectively block
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
     }

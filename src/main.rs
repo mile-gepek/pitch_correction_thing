@@ -12,12 +12,12 @@ use iced::{
     futures::{SinkExt, Stream},
     stream, widget,
 };
-use rtrb::{Producer, RingBuffer};
+use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::yin::Yin;
 
 struct State {
-    frequency: f64,
+    previous_frequencies: Vec<f64>,
 }
 
 #[derive(Clone)]
@@ -28,12 +28,19 @@ enum Message {
 
 impl State {
     fn new() -> Self {
-        Self { frequency: 0. }
+        Self {
+            previous_frequencies: Vec::with_capacity(5),
+        }
     }
 
     fn update(&mut self, message: Message) {
         match message {
-            Message::FrequencyChange(pitch) => self.frequency = pitch,
+            Message::FrequencyChange(frequency) => {
+                if self.previous_frequencies.len() == self.previous_frequencies.capacity() {
+                    self.previous_frequencies.remove(0);
+                }
+                self.previous_frequencies.push(frequency)
+            }
             Message::ButtonPress => {
                 println!("button pressed");
             }
@@ -41,7 +48,19 @@ impl State {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let pitch_text = widget::text(format!("{:.2}", self.frequency));
+        let mut frequencies = self.previous_frequencies.clone();
+        frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let len = frequencies.len();
+        let median_frequency = if len % 2 == 0 && len >= 2 {
+            let lower = frequencies[len / 2 - 1];
+            let upper = frequencies[len / 2];
+            (lower + upper) / 2.
+        } else if len > 0 {
+            frequencies[len / 2]
+        } else {
+            0.
+        };
+        let pitch_text = widget::text(format!("{:.2}", median_frequency));
         let button = widget::button("BLA").on_press(Message::ButtonPress);
         widget::column![pitch_text, button].into()
     }
@@ -54,16 +73,16 @@ impl State {
     fn spawn_frequency_detection_stream() -> impl Stream<Item = Message> {
         stream::channel(100, async |mut output| {
             // TODO: currently arbitrary
-            let buffer_size = 1 << 12;
+            let buffer_size = 1 << 10;
             let frame_size = 1 << 10;
-            let (sample_producer, sample_consumer) = RingBuffer::<f64>::new(buffer_size);
-            let (yin, _stream) = build_stream_and_estimator(sample_producer);
+
+            let (yin_esimator, _stream, sample_consumer) = build_stream_and_estimator(buffer_size);
 
             let (frequency_updater, mut frequency_reader) = triple_buffer::triple_buffer(&0.);
             // Spawning a new thread increases consumer reading speed,
             // because there is no need to await and tokio::sleep
             thread::spawn(move || {
-                frequency_detection(yin, frame_size, sample_consumer, frequency_updater)
+                frequency_detection(yin_esimator, frame_size, sample_consumer, frequency_updater)
             });
 
             loop {
@@ -79,7 +98,7 @@ impl State {
 
 /// Gather samples from the producer and attempt to estimate the frequency with the yin algorithm.
 ///
-/// If a frequency is found, it is sent via `frequency_updater`.
+/// If a frequency is found, `frequency_updater` is updated with the new value.
 fn frequency_detection(
     yin: Yin,
     frame_size: usize,
@@ -133,22 +152,25 @@ macro_rules! impl_spawn_stream {
 }
 
 /// Find the default device and build a stream for it, alongside the Yin estimator.
-fn build_stream_and_estimator(sample_buffer: Producer<f64>) -> (Yin, cpal::Stream) {
+fn build_stream_and_estimator(buffer_size: usize) -> (Yin, cpal::Stream, Consumer<f64>) {
     let host = cpal::default_host();
     let device = host.default_input_device().unwrap();
+
     let mut config_range = device.supported_input_configs().unwrap();
     config_range.next().unwrap();
     let config = config_range.next().unwrap().with_max_sample_rate();
-    let sample_rate = config.sample_rate();
+
+    let (sample_producer, sample_consumer) = RingBuffer::<f64>::new(buffer_size);
 
     let freq_min = 80.;
-    let freq_max = 2000.;
-    let yin = Yin::new(sample_rate, freq_min, freq_max, 0.1);
+    let freq_max = 1000.;
+    let threshold = 0.1;
+    let yin = Yin::new(config.sample_rate(), freq_min, freq_max, threshold);
 
     let stream = impl_spawn_stream!(
         &device,
         config,
-        sample_buffer,
+        sample_producer,
         [
             I8 => i8,
             I16 => i16,
@@ -162,7 +184,7 @@ fn build_stream_and_estimator(sample_buffer: Producer<f64>) -> (Yin, cpal::Strea
             F64 => f64,
         ]
     );
-    (yin, stream)
+    (yin, stream, sample_consumer)
 }
 
 /// Build the input stream on the given device, for any Sample T.
@@ -180,15 +202,7 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
-                // Possible issue if the sample buffer fills up because of consumer lag.
-                // At a sample rate of 48000, 512 samples is about 10 milliseconds.
-                // The consumer *should* be able to handle this.
-                for sample in data.into_iter().step_by(channels) {
-                    while sample_buffer.is_full() {
-                        thread::sleep(Duration::from_nanos(1));
-                    }
-                    sample_buffer.push(sample.to_sample()).unwrap();
-                }
+                write_audio(data, &mut sample_buffer, channels)
             },
             |_| todo!("TODO: implement input stream error callback"),
             None,
@@ -197,6 +211,23 @@ where
         .unwrap();
     stream.play().unwrap();
     stream
+}
+
+fn write_audio<T>(data: &[T], sample_producer: &mut Producer<f64>, channels: usize)
+where
+    T: SizedSample,
+    f64: FromSample<T>,
+{
+    // Possible issue if the sample buffer fills up because of consumer lag.
+    // This function (on average) writes samples at `sample_rate / channels`,
+    // the consumer should be able to keep up with this.
+    for sample in data.into_iter().step_by(channels) {
+        if sample_producer.push(sample.to_sample()).is_err() {
+            // Producer fell behind..
+            // TODO: printing in an audio thread is stupid.
+            eprintln!("producer fell behind");
+        }
+    }
 }
 
 fn main() {

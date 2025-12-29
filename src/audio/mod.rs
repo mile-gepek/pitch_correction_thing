@@ -1,3 +1,5 @@
+//! Module for general audio related logic.
+
 pub mod yin;
 use self::yin::Yin;
 
@@ -114,7 +116,7 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
-                write_audio(data, &mut sample_buffer, channels)
+                read_audio(data, &mut sample_buffer, channels)
             },
             |_| todo!("TODO: implement input stream error callback"),
             None,
@@ -124,7 +126,9 @@ where
     stream
 }
 
-fn write_audio<T>(data: &[T], sample_producer: &mut Producer<f64>, channels: usize)
+/// Reads from the `data` slice and pushes it onto the producer,
+/// currently uses only one of the data channels.
+fn read_audio<T>(data: &[T], sample_producer: &mut Producer<f64>, channels: usize)
 where
     T: SizedSample,
     f64: FromSample<T>,
@@ -132,6 +136,8 @@ where
     // Possible issue if the sample buffer fills up because of consumer lag.
     // This function (on average) writes samples at `sample_rate / channels`,
     // the consumer should be able to keep up with this.
+
+    // TODO: figure out how to use all channels
     for sample in data.into_iter().step_by(channels) {
         if sample_producer.push(sample.to_sample()).is_err() {
             // Consumer fell behind..
@@ -152,10 +158,16 @@ pub struct Pitch {
 }
 
 impl Pitch {
-    const C0: Self = Self {
+    pub const C0: Self = Self {
         note: Note::C,
         octave: 0,
     };
+
+    pub const A440: Self = Self {
+        note: Note::A,
+        octave: 4,
+    };
+    pub const A4: Self = Self::A440;
 
     pub fn new(note: Note, octave: u8) -> Self {
         Pitch { note, octave }
@@ -173,7 +185,9 @@ impl Pitch {
         self.note.to_semitones_from_c() + 12. * self.octave as f64
     }
 
-    /// Calculate the frequency based on equal temperament, relative to A440.
+    /// Calculate the frequency based on equal temperament, relative to [`A440`].
+    ///
+    /// [`A440`]: Self::A440
     pub fn frequency(&self) -> f64 {
         let semitone = 2_f64.powf(1. / 12.);
         let semitones_to_c0 = self.semitones_to_c0();

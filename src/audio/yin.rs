@@ -1,15 +1,19 @@
-//! Implementation of the YIN pitch detection algorithm.
+//! Implementation of the YIN frequency detection algorithm.
 //!
-//! To begin, construct a new Yin instance, and use the detect_pitch method on the samples
+//! To begin, construct a new Yin instance, and use the [`detect_pitch`] method on the samples.
+//!
+//! [`detech_pitch`]: Yin::detect_pitch
 
+// The yin estimator settings.
 pub struct Yin {
-    sample_rate: u32,
-    min_freq: f64,
-    max_freq: f64,
-    threshold: f64,
+    pub sample_rate: u32,
+    pub min_freq: f64,
+    pub max_freq: f64,
+    pub threshold: f64,
 }
 
 impl Yin {
+    /// Create a new yin instance with the given settings.
     pub fn new(sample_rate: u32, min_freq: f64, max_freq: f64, threshold: f64) -> Self {
         assert!(min_freq < max_freq);
         Self {
@@ -20,6 +24,11 @@ impl Yin {
         }
     }
 
+    /// Try to estimate the frequency of the given frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the frame does not have enough samples (`sample_rate / min_freq`).
     pub fn detect_pitch(&self, frame: &[f64]) -> Option<f64> {
         let tau_min = (self.sample_rate as f64 / self.max_freq) as usize;
         let tau_max = (self.sample_rate as f64 / self.min_freq) as usize;

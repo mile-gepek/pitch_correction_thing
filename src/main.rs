@@ -1,3 +1,5 @@
+#![feature(macro_metavar_expr)]
+
 mod audio;
 
 use std::{thread, time::Duration};

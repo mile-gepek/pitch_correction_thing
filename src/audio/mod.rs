@@ -3,41 +3,59 @@
 pub mod yin;
 use self::yin::Yin;
 
+use atomic_float::AtomicF64;
 use cpal::{
-    FromSample, SizedSample,
-    traits::{DeviceTrait, HostTrait},
+    FromSample, SizedSample, Stream,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use rtrb::{Consumer, Producer, RingBuffer};
-use std::{fmt::Display, thread, time::Duration};
+use std::{fmt::Display, sync::Arc, thread, time::Duration};
 
-/// Gather samples from the producer and attempt to estimate the frequency with the yin algorithm.
+/// Start a thread to gather samples from the producer and attempt to estimate the frequency with the yin algorithm.
 ///
 /// If a frequency is found, `frequency_updater` is updated with the new value.
-pub fn frequency_detection(
+fn frequency_detection_thread(
     yin: Yin,
     frame_size: usize,
     mut sample_consumer: rtrb::Consumer<f64>,
-    mut frequency_updater: triple_buffer::Input<f64>,
-) {
+) -> Arc<AtomicF64> {
+    let frequency_atomic = Arc::new(AtomicF64::new(0.));
+    let frequency_cloned = frequency_atomic.clone();
+
     let mut frame = Vec::with_capacity(frame_size);
-    loop {
-        if let Ok(sample) = sample_consumer.pop() {
-            frame.push(sample);
-            if frame.len() == frame_size {
-                let frequency = yin.detect_pitch(&frame);
-                frame.clear();
-                let Some(frequency) = frequency else {
-                    continue;
-                };
-                frequency_updater.write(frequency);
+    // TODO: this thread handle should be stored somewhere along with the stream,
+    // if one dies, the other should too.
+    // OR
+    // do the processing in the audio input thread.
+    thread::spawn(move || {
+        loop {
+            if let Ok(sample) = sample_consumer.pop() {
+                frame.push(sample);
+                if frame.len() == frame_size {
+                    let frequency = yin.detect_pitch(&frame);
+                    frame.clear();
+                    let Some(frequency) = frequency else {
+                        continue;
+                    };
+                    frequency_atomic.store(frequency, std::sync::atomic::Ordering::Release);
+                }
+            } else {
+                // At a sample rate of 48000 hz, it takes ~21 milliseconds
+                // to get 1024 samples, so we can sleep and still be sure
+                // the buffer isn't full
+                thread::sleep(Duration::from_millis(5));
             }
-        } else {
-            // At a sample rate of 48000 hz, it takes ~21 milliseconds
-            // to get 1024 samples, so we can sleep and still be sure
-            // the buffer isn't full
-            thread::sleep(Duration::from_millis(5));
         }
-    }
+    });
+
+    frequency_cloned
+}
+
+pub fn init_frequency_detection(buffer_size: usize, frame_size: usize) -> (Arc<AtomicF64>, Stream) {
+    let (yin_esimator, stream, sample_consumer) = build_stream_and_estimator(buffer_size);
+    stream.play().unwrap();
+    let frequency = frequency_detection_thread(yin_esimator, frame_size, sample_consumer);
+    (frequency, stream)
 }
 
 macro_rules! impl_spawn_stream {
@@ -66,7 +84,7 @@ macro_rules! impl_spawn_stream {
 }
 
 /// Find the default device and build a stream for it, alongside the Yin estimator.
-pub fn build_stream_and_estimator(buffer_size: usize) -> (Yin, cpal::Stream, Consumer<f64>) {
+fn build_stream_and_estimator(buffer_size: usize) -> (Yin, cpal::Stream, Consumer<f64>) {
     let host = cpal::default_host();
     let device = host.default_input_device().unwrap();
 

@@ -1,8 +1,7 @@
 mod audio;
 
-use std::{thread, time::Duration};
+use std::time::Duration;
 
-use cpal::traits::StreamTrait;
 use iced::{
     Element, Subscription,
     futures::{SinkExt, Stream},
@@ -51,12 +50,15 @@ impl State {
     fn view(&self) -> Element<'_, Message> {
         let frequency = self.get_median_frequency().unwrap_or_default();
         let frequency_text = widget::text(format!("Frequency: {:.2}", frequency));
+
         let pitch = audio::Pitch::closest_from_frequency(frequency);
         let note = pitch.note();
         let octave = pitch.octave();
+
         let note_text = widget::text(note.to_string());
         let octave_text = widget::text(octave).size(24);
         let pitch_info = row!["Pitch: ", note_text, octave_text].align_y(iced::Bottom);
+
         column![frequency_text, pitch_info].into()
     }
 
@@ -70,27 +72,17 @@ impl State {
             // TODO: currently arbitrary
             let buffer_size = 1 << 12;
             let frame_size = 1 << 10;
+            let (frequency_atomic, _stream) =
+                audio::init_frequency_detection(buffer_size, frame_size);
 
-            let (yin_esimator, stream, sample_consumer) =
-                audio::build_stream_and_estimator(buffer_size);
-            stream.play().unwrap();
-
-            let (frequency_updater, mut frequency_reader) = triple_buffer::triple_buffer(&0.);
-            // Spawning a new thread increases consumer reading speed,
-            // because there is no need to await and tokio::sleep
-            thread::spawn(move || {
-                audio::frequency_detection(
-                    yin_esimator,
-                    frame_size,
-                    sample_consumer,
-                    frequency_updater,
-                )
-            });
-
+            let mut last_frequency = 0.;
             loop {
-                frequency_reader.update();
-                let frequency = frequency_reader.read();
-                _ = output.send(Message::FrequencyChange(*frequency)).await;
+                let frequency = frequency_atomic.load(std::sync::atomic::Ordering::Acquire);
+                if last_frequency == frequency {
+                    continue;
+                }
+                last_frequency = frequency;
+                _ = output.send(Message::FrequencyChange(frequency)).await;
                 // Not sleeping makes the repeated sending effectively block
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

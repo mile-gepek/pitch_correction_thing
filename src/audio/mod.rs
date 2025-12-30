@@ -1,6 +1,7 @@
 //! Module for general audio related logic.
 
-pub mod yin;
+use super::signal::Signal;
+mod yin;
 use self::yin::Yin;
 
 use atomic_float::AtomicF64;
@@ -8,8 +9,8 @@ use cpal::{
     FromSample, SizedSample, Stream,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-use rtrb::{Consumer, Producer, RingBuffer};
-use std::{fmt::Display, sync::Arc, thread, time::Duration};
+use rtrb::{Producer, RingBuffer};
+use std::{fmt::Display, sync::Arc, thread};
 
 /// Start a thread to gather samples from the producer and attempt to estimate the frequency with the yin algorithm.
 ///
@@ -18,7 +19,7 @@ fn frequency_detection_thread(
     yin: Yin,
     frame_size: usize,
     mut sample_consumer: rtrb::Consumer<f64>,
-) -> Arc<AtomicF64> {
+) -> (Arc<AtomicF64>, Signal) {
     let frequency_atomic = Arc::new(AtomicF64::new(0.));
     let frequency_cloned = frequency_atomic.clone();
 
@@ -27,9 +28,11 @@ fn frequency_detection_thread(
     // if one dies, the other should too.
     // OR
     // do the processing in the audio input thread.
-    thread::spawn(move || {
+    let thread_builder = thread::Builder::new().name("Autotune.rs - pitch detection".into());
+    let (_, signal) = Signal::spawn_with_builder(thread_builder, move |signal| {
         loop {
-            if let Ok(sample) = sample_consumer.pop() {
+            let _handle = signal.wait();
+            while let Ok(sample) = sample_consumer.pop() {
                 frame.push(sample);
                 if frame.len() == frame_size {
                     let frequency = yin.detect_pitch(&frame);
@@ -39,22 +42,34 @@ fn frequency_detection_thread(
                     };
                     frequency_atomic.store(frequency, std::sync::atomic::Ordering::Relaxed);
                 }
-            } else {
-                // At a sample rate of 48000 hz, it takes ~21 milliseconds
-                // to get 1024 samples, so we can sleep and still be sure
-                // the buffer isn't full
-                thread::sleep(Duration::from_millis(5));
             }
         }
-    });
+    })
+    .unwrap();
 
-    frequency_cloned
+    (frequency_cloned, signal)
 }
 
 pub fn init_frequency_detection(buffer_size: usize, frame_size: usize) -> (Arc<AtomicF64>, Stream) {
-    let (yin_esimator, stream, sample_consumer) = build_stream_and_estimator(buffer_size);
+    let host = cpal::default_host();
+    let device = host.default_input_device().unwrap();
+
+    let mut config_range = device.supported_input_configs().unwrap();
+    config_range.next().unwrap();
+    let config = config_range.next().unwrap().with_max_sample_rate();
+
+    let freq_min = 100.;
+    let freq_max = 1000.;
+    let threshold = 0.1;
+    let yin = Yin::new(config.sample_rate(), freq_min, freq_max, threshold);
+
+    let (sample_producer, sample_consumer) = RingBuffer::<f64>::new(buffer_size);
+
+    let (frequency, sample_signal) = frequency_detection_thread(yin, frame_size, sample_consumer);
+
+    let stream = build_stream(device, config, sample_producer, sample_signal);
+
     stream.play().unwrap();
-    let frequency = frequency_detection_thread(yin_esimator, frame_size, sample_consumer);
     (frequency, stream)
 }
 
@@ -63,6 +78,7 @@ macro_rules! impl_spawn_stream {
         $device:expr,
         $config:expr,
         $producer:expr,
+        $sample_signal:expr,
         [
             $($p:ident => $t:ty),+
             $(,)?
@@ -75,6 +91,7 @@ macro_rules! impl_spawn_stream {
                         $device,
                         &($config).into(),
                         $producer,
+                        $sample_signal,
                     )
                 })+,
                 format => panic!("unsupported sample format {}", format)
@@ -83,26 +100,18 @@ macro_rules! impl_spawn_stream {
     }
 }
 
-/// Find the default device and build a stream for it, alongside the Yin estimator.
-fn build_stream_and_estimator(buffer_size: usize) -> (Yin, cpal::Stream, Consumer<f64>) {
-    let host = cpal::default_host();
-    let device = host.default_input_device().unwrap();
-
-    let mut config_range = device.supported_input_configs().unwrap();
-    config_range.next().unwrap();
-    let config = config_range.next().unwrap().with_max_sample_rate();
-
-    let (sample_producer, sample_consumer) = RingBuffer::<f64>::new(buffer_size);
-
-    let freq_min = 80.;
-    let freq_max = 1000.;
-    let threshold = 0.1;
-    let yin = Yin::new(config.sample_rate(), freq_min, freq_max, threshold);
-
+/// Build the stream for the given device and config.
+fn build_stream(
+    device: cpal::Device,
+    config: cpal::SupportedStreamConfig,
+    sample_producer: Producer<f64>,
+    sample_signal: Signal,
+) -> cpal::Stream {
     let stream = impl_spawn_stream!(
         &device,
         config,
         sample_producer,
+        sample_signal,
         [
             I8 => i8,
             I16 => i16,
@@ -116,7 +125,7 @@ fn build_stream_and_estimator(buffer_size: usize) -> (Yin, cpal::Stream, Consume
             F64 => f64,
         ]
     );
-    (yin, stream, sample_consumer)
+    stream
 }
 
 /// Build the input stream on the given device, for any Sample T.
@@ -124,6 +133,7 @@ fn build_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     mut sample_buffer: Producer<f64>,
+    sample_signal: Signal,
 ) -> cpal::Stream
 where
     T: SizedSample,
@@ -134,7 +144,7 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
-                read_audio(data, &mut sample_buffer, channels)
+                read_audio(data, &mut sample_buffer, channels, &sample_signal)
             },
             |_| todo!("TODO: implement input stream error callback"),
             None,
@@ -144,25 +154,46 @@ where
     stream
 }
 
-/// Reads from the `data` slice and pushes it onto the producer,
-/// currently uses only one of the data channels.
-fn read_audio<T>(data: &[T], sample_producer: &mut Producer<f64>, channels: usize)
-where
+/// Reads from the `data` slice, pushes it onto the producer,
+/// then unparks the pitch estimation thread.
+///
+/// Currently uses only one of the data channels.
+fn read_audio<T>(
+    samples: &[T],
+    sample_producer: &mut Producer<f64>,
+    channels: usize,
+    sample_signal: &Signal,
+) where
     T: SizedSample,
     f64: FromSample<T>,
 {
     // Possible issue if the sample buffer fills up because of consumer lag.
+    //
     // This function (on average) writes samples at `sample_rate / channels`,
     // the consumer should be able to keep up with this.
 
     // TODO: figure out how to use all channels
-    for sample in data.into_iter().step_by(channels) {
-        if sample_producer.push(sample.to_sample()).is_err() {
-            // Consumer fell behind..
-            // TODO: printing in an audio thread is stupid.
-            eprintln!("Consumer fell behind");
-        }
+    let cap = sample_producer.buffer().capacity();
+    let data_len_norm = samples.len() / channels;
+    if cap < data_len_norm {
+        eprintln!("Got {} samples for buffer of size {}", data_len_norm, cap);
     }
+    let slots = sample_producer.slots();
+    let samples_to_write = slots.min(data_len_norm);
+    let Ok(writer) = sample_producer.write_chunk_uninit(samples_to_write) else {
+        eprintln!("No slots, consumer fell behind");
+        return;
+    };
+    if slots < data_len_norm {
+        eprintln!("Consumer fell behind");
+    }
+    let samples_iter = samples
+        .iter()
+        .step_by(channels)
+        .map(|sample| f64::from_sample_(*sample));
+    writer.fill_from_iter(samples_iter);
+
+    sample_signal.set();
 }
 
 /// A struct that carries information about a Note and an octave,

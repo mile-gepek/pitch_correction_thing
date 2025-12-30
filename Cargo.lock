@@ -280,6 +280,7 @@ version = "0.1.0"
 dependencies = [
  "atomic_float",
  "cpal",
+ "crossbeam-channel",
  "iced",
  "rtrb",
  "tokio",
@@ -667,6 +668,15 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]

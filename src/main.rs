@@ -1,4 +1,5 @@
 mod audio;
+mod signal;
 
 use std::time::Duration;
 
@@ -70,14 +71,14 @@ impl State {
     fn spawn_frequency_detection_stream() -> impl Stream<Item = Message> {
         stream::channel(100, async |mut output| {
             // TODO: currently arbitrary
-            let buffer_size = 1 << 12;
-            let frame_size = 1 << 10;
+            let buffer_size = 1 << 10;
+            let frame_size = 1 << 9;
             let (frequency_atomic, _stream) =
                 audio::init_frequency_detection(buffer_size, frame_size);
 
             loop {
                 // Not sleeping makes the repeated sending effectively block
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
                 let frequency = frequency_atomic.load(std::sync::atomic::Ordering::Relaxed);
                 _ = output.send(Message::FrequencyChange(frequency)).await;
             }

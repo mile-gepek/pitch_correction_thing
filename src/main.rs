@@ -75,16 +75,11 @@ impl State {
             let (frequency_atomic, _stream) =
                 audio::init_frequency_detection(buffer_size, frame_size);
 
-            let mut last_frequency = 0.;
             loop {
-                let frequency = frequency_atomic.load(std::sync::atomic::Ordering::Acquire);
-                if last_frequency == frequency {
-                    continue;
-                }
-                last_frequency = frequency;
-                _ = output.send(Message::FrequencyChange(frequency)).await;
                 // Not sleeping makes the repeated sending effectively block
                 tokio::time::sleep(Duration::from_millis(50)).await;
+                let frequency = frequency_atomic.load(std::sync::atomic::Ordering::Relaxed);
+                _ = output.send(Message::FrequencyChange(frequency)).await;
             }
         })
     }

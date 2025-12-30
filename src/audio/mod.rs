@@ -37,7 +37,7 @@ fn frequency_detection_thread(
                     let Some(frequency) = frequency else {
                         continue;
                     };
-                    frequency_atomic.store(frequency, std::sync::atomic::Ordering::Release);
+                    frequency_atomic.store(frequency, std::sync::atomic::Ordering::Relaxed);
                 }
             } else {
                 // At a sample rate of 48000 hz, it takes ~21 milliseconds

@@ -1,14 +1,14 @@
 //! Implementation of the YIN frequency detection algorithm.
 //!
-//! To begin, construct a new Yin instance, and use the [`detect_pitch`] method on the samples.
+//! To begin, construct a new Yin instance, and use the [`detect_frequency`] method on the samples.
 //!
-//! [`detech_pitch`]: Yin::detect_pitch
+//! [`detect_frequency`]: Yin::detect_frequency
 
 // The yin estimator settings.
 pub struct Yin {
     pub sample_rate: u32,
-    pub min_freq: f64,
-    pub max_freq: f64,
+    pub tau_min: usize,
+    pub tau_max: usize,
     pub threshold: f64,
 }
 
@@ -16,12 +16,18 @@ impl Yin {
     /// Create a new yin instance with the given settings.
     pub fn new(sample_rate: u32, min_freq: f64, max_freq: f64, threshold: f64) -> Self {
         assert!(min_freq < max_freq);
+        let tau_min = (sample_rate as f64 / max_freq) as usize;
+        let tau_max = (sample_rate as f64 / min_freq) as usize;
         Self {
             sample_rate,
-            min_freq,
-            max_freq,
+            tau_min,
+            tau_max,
             threshold,
         }
+    }
+
+    pub fn minimum_frame_size(&self) -> usize {
+        (2 * self.tau_max).next_power_of_two()
     }
 
     /// Try to estimate the frequency of the given frame.
@@ -29,14 +35,13 @@ impl Yin {
     /// # Panics
     ///
     /// Panics if the frame does not have enough samples (`sample_rate / min_freq`).
-    pub fn detect_pitch(&self, frame: &[f64]) -> Option<f64> {
-        let tau_min = (self.sample_rate as f64 / self.max_freq) as usize;
-        let tau_max = (self.sample_rate as f64 / self.min_freq) as usize;
-        assert!(tau_max < frame.len());
+    pub fn detect_frequency(&self, frame: &[f64]) -> Option<f64> {
+        assert!(self.tau_max < frame.len());
 
-        let differences = Self::difference_function(&frame, tau_max);
+        let differences = Self::difference_function(&frame, self.tau_max);
         let cmndf = Self::cmndf(&differences);
-        let Some(tau_star) = Self::absolute_threshold(&cmndf, tau_min, tau_max, self.threshold)
+        let Some(tau_star) =
+            Self::absolute_threshold(&cmndf, self.tau_min, self.tau_max, self.threshold)
         else {
             return None;
         };

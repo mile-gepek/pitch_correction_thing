@@ -1,8 +1,8 @@
 mod audio;
-mod signal;
 
 use std::time::Duration;
 
+use cpal::traits::HostTrait;
 use iced::{
     Element, Subscription,
     futures::{SinkExt, Stream},
@@ -70,16 +70,21 @@ impl State {
     /// Iced subscription method, sends PitchChange messages when it detects a pitch.
     fn spawn_frequency_detection_stream() -> impl Stream<Item = Message> {
         stream::channel(100, async |mut output| {
+            let host = cpal::default_host();
+            let device = host.default_input_device().unwrap();
+
             // TODO: currently arbitrary
-            let buffer_size = 1 << 10;
-            let frame_size = 1 << 9;
-            let (frequency_atomic, _stream) =
-                audio::init_frequency_detection(buffer_size, frame_size);
+            let min_freq = 80.;
+            let max_freq = 1000.;
+            let threshold = 0.15;
+            let buffer_size = 1 << 12;
+            let handle = audio::FrequencyDetector::new(min_freq, max_freq, threshold, buffer_size)
+                .start_best_config(device);
 
             loop {
                 // Not sleeping makes the repeated sending effectively block
                 tokio::time::sleep(Duration::from_millis(10)).await;
-                let frequency = frequency_atomic.load(std::sync::atomic::Ordering::Relaxed);
+                let frequency = handle.frequency();
                 _ = output.send(Message::FrequencyChange(frequency)).await;
             }
         })

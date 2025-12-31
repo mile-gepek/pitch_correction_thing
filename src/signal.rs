@@ -3,12 +3,15 @@
 //! # Examples
 //! ```
 //! let (_, signal) = Signal::spawn(|signal| {
-//!     let _handle = signal.wait(); // Repeatedly parks until [`set`] is called from a different thread.
+//!     // Repeatedly parks until [`set`] is called from a different thread.
+//!     let _handle = signal.wait();
+//!
 //!     // Do stuff...
+//!
 //!     // When _handle is dropped, the signal resets and unparks.
 //! });
 //!
-//! // Ready to start other thread
+//! // Ready to continue other thread
 //! signal.set();
 //! ```
 

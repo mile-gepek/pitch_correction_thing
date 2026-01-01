@@ -8,7 +8,11 @@ use cpal::{
     Device, FromSample, SizedSample, Stream,
     traits::{DeviceTrait, StreamTrait},
 };
-use rtrb::{Producer, RingBuffer};
+use ringbuf::{
+    HeapCons, HeapProd, HeapRb,
+    traits::{Consumer, Producer, Split},
+};
+
 use std::{
     fmt::Display,
     sync::{
@@ -62,13 +66,9 @@ impl FrequencyDetector {
             self.max_freq,
             self.threshold,
         );
-        let frame_size = yin.minimum_frame_size();
 
-        let (sample_producer, sample_consumer) = RingBuffer::<f64>::new(self.buffer_size);
-
-        let (frequency, sample_signal, thread) =
-            frequency_detection_thread(yin, frame_size, sample_consumer);
-
+        let (sample_producer, sample_consumer) = HeapRb::new(self.buffer_size).split();
+        let (frequency, sample_signal, thread) = frequency_detection_thread(yin, sample_consumer);
         let stream = build_stream(device, config, sample_producer, sample_signal);
 
         stream.play().unwrap();
@@ -103,14 +103,14 @@ impl FrequencyDetectorHandle {
 /// If a frequency is found, `frequency_updater` is updated with the new value.
 fn frequency_detection_thread(
     yin: Yin,
-    frame_size: usize,
-    mut sample_consumer: rtrb::Consumer<f64>,
+    mut sample_consumer: HeapCons<f64>,
 ) -> (Arc<AtomicF64>, SyncSender<()>, thread::JoinHandle<()>) {
     let frequency_atomic = Arc::new(AtomicF64::new(0.));
     let frequency_cloned = frequency_atomic.clone();
 
     let (signal_sender, signal_reader) = mpsc::sync_channel(0);
 
+    let frame_size = yin.minimum_frame_size();
     let mut frame = vec![0.; frame_size];
     // TODO: this thread handle should be stored somewhere along with the stream,
     // if one dies, the other should too.
@@ -124,7 +124,7 @@ fn frequency_detection_thread(
                 if signal_reader.recv().is_err() {
                     break;
                 };
-                while let Ok(sample) = sample_consumer.pop() {
+                for sample in sample_consumer.pop_iter() {
                     frame[i] = sample;
                     i += 1;
                     if i == frame_size {
@@ -174,7 +174,7 @@ macro_rules! impl_spawn_stream {
 fn build_stream(
     device: cpal::Device,
     config: cpal::SupportedStreamConfig,
-    sample_producer: Producer<f64>,
+    sample_producer: HeapProd<f64>,
     sample_signal: SyncSender<()>,
 ) -> cpal::Stream {
     let stream = impl_spawn_stream!(
@@ -202,7 +202,7 @@ fn build_stream(
 fn build_input_stream<T>(
     device: &cpal::Device,
     config: cpal::SupportedStreamConfig,
-    mut sample_buffer: Producer<f64>,
+    mut sample_buffer: HeapProd<f64>,
     sample_signal: SyncSender<()>,
 ) -> cpal::Stream
 where
@@ -213,13 +213,14 @@ where
     match config.buffer_size() {
         cpal::SupportedBufferSize::Range { min, .. } => {
             // Request a small buffer for low latency
-            let buf_size = *min.max(&512);
+            let buf_size = *min.max(&256);
             stream_config.buffer_size = cpal::BufferSize::Fixed(buf_size);
         }
         cpal::SupportedBufferSize::Unknown => {
             println!("Buffer size cannot be queried on this platform");
         }
     }
+    dbg!(&stream_config);
     let channels = config.channels() as usize;
     let stream = device
         .build_input_stream(
@@ -241,7 +242,7 @@ where
 /// Currently uses only one of the data channels.
 fn read_audio<T>(
     samples: &[T],
-    sample_producer: &mut Producer<f64>,
+    sample_producer: &mut HeapProd<f64>,
     channels: usize,
     sample_signal: &SyncSender<()>,
 ) where
@@ -253,29 +254,17 @@ fn read_audio<T>(
     // This function (on average) writes samples at `sample_rate / channels`,
     // the consumer should be able to keep up with this.
 
-    // TODO: figure out how to use all channels
-    let cap = sample_producer.buffer().capacity();
-    let data_len_norm = samples.len() / channels;
-    if cap < data_len_norm {
-        eprintln!("Got {} samples for buffer of size {}", data_len_norm, cap);
-    }
-    let slots = sample_producer.slots();
-    let samples_to_write = slots.min(data_len_norm);
-    let to_skip = samples.len() - samples_to_write * channels;
+    let sample_count_mono = samples.len() / channels;
 
-    let Ok(writer) = sample_producer.write_chunk_uninit(samples_to_write) else {
-        eprintln!("No slots, consumer fell behind");
-        return;
-    };
-    if slots < data_len_norm {
-        eprintln!("Consumer fell behind");
-    }
-    let samples_iter = samples
-        .iter()
-        .skip(to_skip)
+    let samples = samples
+        .into_iter()
         .step_by(channels)
         .map(|sample| f64::from_sample_(*sample));
-    writer.fill_from_iter(samples_iter);
+
+    #[cfg(debug_assertions)]
+    if sample_producer.push_iter(samples) < sample_count_mono {
+        eprintln!("Consumer fell behind");
+    }
 
     sample_signal.send(()).unwrap();
 }

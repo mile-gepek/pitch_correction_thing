@@ -27,7 +27,7 @@ impl Yin {
     }
 
     pub fn minimum_frame_size(&self) -> usize {
-        (2 * self.tau_max).next_power_of_two()
+        2 * self.tau_max
     }
 
     /// Try to estimate the frequency of the given frame.

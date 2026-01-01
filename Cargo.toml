@@ -8,5 +8,5 @@ atomic_float = "1.1.0"
 cpal = "0.17.0"
 crossbeam-channel = "0.5.15"
 iced = { version = "0.14.0", features = ["tokio"] }
-rtrb = "0.3.2"
+ringbuf = "0.4.8"
 tokio = "1.48.0"

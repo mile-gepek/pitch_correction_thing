@@ -74,7 +74,7 @@ impl State {
             let device = host.default_input_device().unwrap();
 
             // TODO: currently arbitrary
-            let min_freq = 80.;
+            let min_freq = 60.;
             let max_freq = 1000.;
             let threshold = 0.15;
             let buffer_size = 1 << 12;

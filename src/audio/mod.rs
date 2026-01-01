@@ -130,10 +130,9 @@ fn frequency_detection_thread(
                     if i == frame_size {
                         i = 0;
                         let frequency = yin.detect_frequency(&frame);
-                        let Some(frequency) = frequency else {
-                            continue;
+                        if let Some(frequency) = frequency {
+                            frequency_atomic.store(frequency, std::sync::atomic::Ordering::Relaxed);
                         };
-                        frequency_atomic.store(frequency, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }

@@ -258,7 +258,7 @@ fn read_audio<T>(
     let samples = samples
         .into_iter()
         .step_by(channels)
-        .map(|sample| f64::from_sample_(*sample));
+        .map(|sample| sample.to_sample());
 
     #[cfg(debug_assertions)]
     if sample_producer.push_iter(samples) < sample_count_mono {

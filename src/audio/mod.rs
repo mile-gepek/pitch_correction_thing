@@ -51,25 +51,37 @@ impl FrequencyDetector {
         let config_range = device.supported_input_configs().unwrap();
         let config = config_range
             .into_iter()
-            .max_by_key(|conf| {
-                let format = conf.sample_format();
+            .max_by_key(|config| {
+                let format = config.sample_format();
                 let bits = format.bits_per_sample();
-                bits * conf.max_sample_rate()
+                bits * config.max_sample_rate()
             })
             .unwrap()
-            .with_max_sample_rate();
+            .try_with_sample_rate(48000) //;
+            .unwrap();
+        let sample_format = config.sample_format();
+        let mut config = config.config();
+        let stream_buffer_size = 256;
+        config.buffer_size = cpal::BufferSize::Fixed(256);
+        config.channels = 1;
         dbg!(&config);
 
         let yin = Yin::new(
-            config.sample_rate(),
+            config.sample_rate,
             self.min_freq,
             self.max_freq,
             self.threshold,
         );
 
-        let (sample_producer, sample_consumer) = HeapRb::new(self.buffer_size).split();
+        let (sample_producer, sample_consumer) = HeapRb::new(2 * stream_buffer_size).split();
         let (frequency, sample_signal, thread) = frequency_detection_thread(yin, sample_consumer);
-        let stream = build_stream(device, config, sample_producer, sample_signal);
+        let stream = build_stream(
+            device,
+            config,
+            sample_format,
+            sample_producer,
+            sample_signal,
+        );
 
         stream.play().unwrap();
         FrequencyDetectorHandle::new(frequency, thread, stream)
@@ -146,6 +158,7 @@ macro_rules! impl_spawn_stream {
     (
         $device:expr,
         $config:expr,
+        $sample_format:expr,
         $producer:expr,
         $sample_signal:expr,
         [
@@ -154,7 +167,7 @@ macro_rules! impl_spawn_stream {
         ]
     ) => {
             {
-            match $config.sample_format() {
+            match $sample_format {
                 $(cpal::SampleFormat::$p => {
                     build_input_stream::<$t>(
                         $device,
@@ -172,13 +185,15 @@ macro_rules! impl_spawn_stream {
 /// Build the stream for the given device and config.
 fn build_stream(
     device: cpal::Device,
-    config: cpal::SupportedStreamConfig,
+    config: cpal::StreamConfig,
+    sample_format: cpal::SampleFormat,
     sample_producer: HeapProd<f64>,
     sample_signal: SyncSender<()>,
 ) -> cpal::Stream {
     let stream = impl_spawn_stream!(
         &device,
         config,
+        sample_format,
         sample_producer,
         sample_signal,
         [
@@ -200,7 +215,7 @@ fn build_stream(
 /// Build the input stream on the given device, for any Sample T.
 fn build_input_stream<T>(
     device: &cpal::Device,
-    config: cpal::SupportedStreamConfig,
+    config: cpal::StreamConfig,
     mut sample_buffer: HeapProd<f64>,
     sample_signal: SyncSender<()>,
 ) -> cpal::Stream
@@ -208,22 +223,10 @@ where
     T: SizedSample,
     f64: FromSample<T>,
 {
-    let mut stream_config = config.config();
-    match config.buffer_size() {
-        cpal::SupportedBufferSize::Range { min, .. } => {
-            // Request a small buffer for low latency
-            let buf_size = *min.max(&256);
-            stream_config.buffer_size = cpal::BufferSize::Fixed(buf_size);
-        }
-        cpal::SupportedBufferSize::Unknown => {
-            println!("Buffer size cannot be queried on this platform");
-        }
-    }
-    dbg!(&stream_config);
-    let channels = config.channels() as usize;
+    let channels = config.channels as usize;
     let stream = device
         .build_input_stream(
-            &stream_config,
+            &config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 read_audio(data, &mut sample_buffer, channels, &sample_signal)
             },

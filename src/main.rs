@@ -12,6 +12,7 @@ use iced::{
 
 struct State {
     previous_frequencies: Vec<f64>,
+    theme: iced::Theme,
 }
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ impl State {
     fn new() -> Self {
         Self {
             previous_frequencies: Vec::with_capacity(5),
+            theme: iced::Theme::GruvboxDark,
         }
     }
 
@@ -89,6 +91,10 @@ impl State {
             }
         })
     }
+
+    pub fn theme(&self) -> iced::Theme {
+        self.theme.clone()
+    }
 }
 
 fn main() {
@@ -98,5 +104,6 @@ fn main() {
             ..Default::default()
         })
         .subscription(State::subscription)
+        .theme(State::theme)
         .run();
 }

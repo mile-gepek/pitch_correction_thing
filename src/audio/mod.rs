@@ -427,6 +427,35 @@ impl Display for Note {
 #[cfg(test)]
 mod tests {
     use super::{Note, Pitch};
+
+    pub fn compare_floats(a: f64, b: f64, tolerance: f64) {
+        let difference = a - b;
+        if difference.abs() > tolerance {
+            panic!(
+                "
+                    Float comparison failed
+                    left: {a},
+                    right: {b},
+                    difference: {difference}
+                "
+            )
+        }
+    }
+
+    #[macro_export]
+    macro_rules! assert_nearly_equal {
+        (
+            $a:expr, $b:expr $(,)?
+        ) => {
+            crate::audio::tests::compare_floats($a, $b, 1e-6)
+        };
+        (
+            $a: expr, $b:expr, $tolerance:expr $(,)?
+        ) => {
+            crate::audio::tests::compare_floats($a, $b, $tolerance)
+        };
+    }
+
     #[test]
     fn semitones_to_note() {
         let semitones = -3;
@@ -445,14 +474,14 @@ mod tests {
     fn frequency_a4() {
         let pitch = Pitch::new(Note::A, 4);
         let frequency = pitch.frequency();
-        assert_eq!(frequency, 440.);
+        assert_nearly_equal!(frequency, 440.);
     }
 
     #[test]
     fn frequency_c0() {
         let pitch = Pitch::new(Note::C, 0);
         let frequency = pitch.frequency();
-        assert_eq!(frequency, 16.351597831287375);
+        assert_nearly_equal!(frequency, 16.351597831287375);
     }
 
     #[test]

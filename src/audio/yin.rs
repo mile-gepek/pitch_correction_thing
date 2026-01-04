@@ -26,16 +26,27 @@ impl Yin {
         }
     }
 
+    /// Returns the minimum size for input with the current settings.
+    ///
+    /// When using the yin algorithm, the input frame must have
+    /// at least this many samples to get decent results.
+    /// Because of this, the method [`detect_frequency`] panics
+    /// if the input frame does not have enough samples.
+    ///
+    /// [`detect_frequency`]: Self::detect_frequency
     pub fn minimum_frame_size(&self) -> usize {
         2 * self.tau_max
     }
 
-    /// Try to estimate the frequency of the given frame.
+    /// Try to estimate the frequency of the input frame.
     ///
     /// # Panics
     ///
-    /// Panics if the frame does not have enough samples (`sample_rate / min_freq`).
+    /// Panics if the frame does not have enough samples (the minimum can be found with [`minimum_frame_size`]).
+    ///
+    /// [`minimum_frame_size`]: Self::minimum_frame_size
     pub fn detect_frequency(&self, frame: &[f64]) -> Option<f64> {
+        assert!(frame.len() >= self.tau_max);
         let differences = self.difference_function(&frame);
         let cmndf = Self::cmndf(&differences);
         let Some(tau_star) =
@@ -48,7 +59,9 @@ impl Yin {
         Some(frequency)
     }
 
+    /// Step 2. The difference function d_tau (figure 6).
     fn difference_function(&self, frame: &[f64]) -> Vec<f64> {
+        // TODO: implement with fft
         let mut differences = vec![0.; self.tau_max];
         for tau in 1..self.tau_max {
             for i in 0..frame.len() - self.tau_max {
@@ -59,6 +72,7 @@ impl Yin {
         differences
     }
 
+    // Step 3. Cumulative mean normalized difference function d'_tau (figure 8).
     fn cmndf(differences: &[f64]) -> Vec<f64> {
         let mut cmndf = vec![1.; differences.len()];
 
@@ -73,6 +87,7 @@ impl Yin {
         cmndf
     }
 
+    // Step 4. Absolute threshold.
     fn absolute_threshold(
         cmndf: &[f64],
         tau_min: usize,
@@ -90,6 +105,7 @@ impl Yin {
         return None;
     }
 
+    // Step 5. Parabolic interpolation.
     fn parabolic_interpolation(cmndf: &[f64], tau: usize) -> f64 {
         if tau == 0 || tau + 1 >= cmndf.len() {
             return tau as f64;

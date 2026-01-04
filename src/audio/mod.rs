@@ -20,6 +20,7 @@ use std::{
         mpsc::{self, SyncSender},
     },
     thread,
+    time::Duration,
 };
 
 #[derive(Copy, Clone)]
@@ -57,14 +58,15 @@ impl FrequencyDetector {
                 bits * config.max_sample_rate()
             })
             .unwrap()
-            .try_with_sample_rate(48000) //;
+            .try_with_sample_rate(5_000) //;
             .unwrap();
         let sample_format = config.sample_format();
         let mut config = config.config();
-        let stream_buffer_size = 256;
-        config.buffer_size = cpal::BufferSize::Fixed(256);
+        config.buffer_size = cpal::BufferSize::Fixed(self.buffer_size as u32);
         config.channels = 1;
+        dbg!(&config.sample_rate);
         dbg!(&config);
+        dbg!(&sample_format);
 
         let yin = Yin::new(
             config.sample_rate,
@@ -73,7 +75,7 @@ impl FrequencyDetector {
             self.threshold,
         );
 
-        let (sample_producer, sample_consumer) = HeapRb::new(2 * stream_buffer_size).split();
+        let (sample_producer, sample_consumer) = HeapRb::new(2 * self.buffer_size).split();
         let (frequency, sample_signal, thread) = frequency_detection_thread(yin, sample_consumer);
         let stream = build_stream(
             device,
@@ -129,7 +131,7 @@ fn frequency_detection_thread(
     // OR
     // do the processing in the audio input thread.
     let thread = thread::Builder::new()
-        .name("Autotune.rs - pitch detection".into())
+        .name("pitch detection".into())
         .spawn(move || {
             let mut i = 0;
             loop {
@@ -147,6 +149,7 @@ fn frequency_detection_thread(
                         };
                     }
                 }
+                thread::sleep(Duration::from_millis(4));
             }
         })
         .unwrap();
@@ -263,12 +266,14 @@ fn read_audio<T>(
         .step_by(channels)
         .map(|sample| sample.to_sample());
 
-    #[cfg(debug_assertions)]
-    if sample_producer.push_iter(samples) < sample_count_mono {
-        eprintln!("Consumer fell behind");
-    }
+    let samples_pushed = sample_producer.push_iter(samples);
 
     sample_signal.send(()).unwrap();
+
+    #[cfg(debug_assertions)]
+    if samples_pushed < sample_count_mono {
+        eprintln!("Consumer fell behind");
+    }
 }
 
 /// A struct that carries information about a Note and an octave,

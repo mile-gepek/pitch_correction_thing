@@ -121,3 +121,141 @@ impl Yin {
         tau as f64 + 0.5 * (y0 - y2) / denom
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::TAU;
+
+    use super::Yin;
+
+    use crate::assert_nearly_equal;
+
+    fn generate_sin(sample_rate: u32, frequency: f64, sample_count: usize) -> Vec<f64> {
+        let step = TAU * frequency / sample_rate as f64;
+        (0..sample_count)
+            .map(move |i| (step * i as f64).sin())
+            .collect()
+    }
+
+    /// Generates a sum of sine waves
+    ///
+    /// E.g. for `frequency_amplitudes` = `[(440., 1.), (600., 0.3)]`, the waveform is `1 * sin(440hz), 0.3 * sin(600hz)`.
+    fn generate_sin_sum(
+        sample_rate: u32,
+        frequency_amplitudes: &[(f64, f64)],
+        sample_count: usize,
+    ) -> Vec<f64> {
+        let step_amplitudes: Vec<(f64, f64)> = frequency_amplitudes
+            .iter()
+            .map(|(frequency, amplitude)| {
+                let step = TAU * frequency / sample_rate as f64;
+                (step, *amplitude)
+            })
+            .collect();
+        (0..sample_count)
+            .map(|i| {
+                step_amplitudes
+                    .iter()
+                    .map(|(step, amplitude)| amplitude * (step * i as f64).sin())
+                    .sum()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_yin_basic_sine() {
+        let sample_rate = 48_000;
+        let frequency = 440.;
+
+        let min_freq = 60.;
+        let max_freq = 1000.;
+        let threshold = 0.1;
+        let yin = Yin::new(sample_rate, min_freq, max_freq, threshold);
+
+        let sample_count = yin.minimum_frame_size();
+        let wave = generate_sin(sample_rate, frequency, sample_count);
+
+        let detected = yin.detect_frequency(&wave).unwrap_or_default();
+        assert_nearly_equal!(detected, frequency, 5.);
+    }
+
+    #[test]
+    fn test_yin_sum() {
+        let sample_rate = 48_000;
+        let frequency_main = 440.;
+        // 1 * sin(440hz) + 0.4 * sin(600hz) + 0.3 * sin(870hz)
+        let frequency_amplitudes = [(frequency_main, 1.), (600., 0.4), (870., 0.3)];
+
+        let min_freq = 60.;
+        let max_freq = 1000.;
+        // Threshold is higher for noisy signal
+        let threshold = 0.25;
+        let yin = Yin::new(sample_rate, min_freq, max_freq, threshold);
+
+        let sample_count = 2 * yin.minimum_frame_size();
+        let wave = generate_sin_sum(sample_rate, &frequency_amplitudes, sample_count);
+
+        let detected = yin.detect_frequency(&wave).unwrap_or_default();
+        // Raise the margin for a noisy signal.
+        assert_nearly_equal!(detected, frequency_main, 15.);
+    }
+
+    #[test]
+    fn test_low_sample_rate_sine() {
+        let sample_rate = 5_000;
+        let frequency = 440.;
+
+        let min_freq = 60.;
+        let max_freq = 1000.;
+        let threshold = 0.1;
+        let yin = Yin::new(sample_rate, min_freq, max_freq, threshold);
+
+        let sample_count = yin.minimum_frame_size();
+        let wave = generate_sin(sample_rate, frequency, sample_count);
+
+        let detected = yin.detect_frequency(&wave).unwrap_or_default();
+        assert_nearly_equal!(detected, frequency, 5.);
+    }
+
+    #[test]
+    fn test_low_sample_rate_sum() {
+        let sample_rate = 5_000;
+        let frequency_main = 440.;
+        // 1 * sin(440hz) + 0.4 * sin(600hz) + 0.3 * sin(870hz)
+        let frequency_amplitudes = [(frequency_main, 1.), (600., 0.4), (870., 0.3)];
+
+        let min_freq = 60.;
+        let max_freq = 1000.;
+        // Threshold is higher for noisy signal
+        let threshold = 0.25;
+        let yin = Yin::new(sample_rate, min_freq, max_freq, threshold);
+
+        let sample_count = yin.minimum_frame_size();
+        let wave = generate_sin_sum(sample_rate, &frequency_amplitudes, sample_count);
+
+        let detected = yin.detect_frequency(&wave).unwrap_or_default();
+        // Raise the margin for a noisy signal.
+        assert_nearly_equal!(detected, frequency_main, 15.);
+    }
+
+    #[test]
+    fn test_near_max_frequency() {
+        // A sample rate of 5_000 can pick up frequencies up to 2_500,
+        // this is because there must be at least 2 samples per wave period,
+        // to "capture" the transition.
+        // This is called the nyquist frequency of a sampler.
+        let sample_rate = 48_000;
+        let frequency = 2_000.;
+
+        let min_freq = 60.;
+        let max_freq = 2000.;
+        let threshold = 0.1;
+        let yin = Yin::new(sample_rate, min_freq, max_freq, threshold);
+
+        let sample_count = yin.minimum_frame_size();
+        let wave = generate_sin(sample_rate, frequency, sample_count);
+
+        let detected = yin.detect_frequency(&wave).unwrap_or_default();
+        assert_nearly_equal!(detected, frequency, 5.);
+    }
+}

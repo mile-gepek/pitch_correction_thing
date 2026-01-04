@@ -11,7 +11,7 @@ use iced::{
 };
 
 struct State {
-    previous_frequencies: Vec<f64>,
+    frequency: f64,
     theme: iced::Theme,
 }
 
@@ -23,35 +23,19 @@ enum Message {
 impl State {
     fn new() -> Self {
         Self {
-            previous_frequencies: Vec::with_capacity(5),
+            frequency: 0.,
             theme: iced::Theme::GruvboxDark,
         }
     }
 
-    fn get_median_frequency(&self) -> Option<f64> {
-        if self.previous_frequencies.is_empty() {
-            return None;
-        }
-        let mut frequencies = self.previous_frequencies.clone();
-        frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let len = frequencies.len();
-        // Yes I know this isn't the median if it's even lenght, I don't care
-        Some(frequencies[len / 2])
-    }
-
     fn update(&mut self, message: Message) {
         match message {
-            Message::FrequencyChange(frequency) => {
-                if self.previous_frequencies.len() == self.previous_frequencies.capacity() {
-                    self.previous_frequencies.remove(0);
-                }
-                self.previous_frequencies.push(frequency)
-            }
+            Message::FrequencyChange(frequency) => self.frequency = frequency,
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let frequency = self.get_median_frequency().unwrap_or_default();
+        let frequency = self.frequency;
         let frequency_text = widget::text(format!("Frequency: {:.2}", frequency));
 
         let pitch = audio::Pitch::closest_from_frequency(frequency);
@@ -78,8 +62,8 @@ impl State {
             // TODO: currently arbitrary
             let min_freq = 60.;
             let max_freq = 1000.;
-            let threshold = 0.15;
-            let buffer_size = 1 << 12;
+            let threshold = 0.10;
+            let buffer_size = 1 << 8;
             let handle = audio::FrequencyDetector::new(min_freq, max_freq, threshold, buffer_size)
                 .start_best_config(device);
 

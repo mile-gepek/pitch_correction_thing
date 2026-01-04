@@ -36,9 +36,7 @@ impl Yin {
     ///
     /// Panics if the frame does not have enough samples (`sample_rate / min_freq`).
     pub fn detect_frequency(&self, frame: &[f64]) -> Option<f64> {
-        assert!(self.tau_max < frame.len());
-
-        let differences = Self::difference_function(&frame, self.tau_max);
+        let differences = self.difference_function(&frame);
         let cmndf = Self::cmndf(&differences);
         let Some(tau_star) =
             Self::absolute_threshold(&cmndf, self.tau_min, self.tau_max, self.threshold)
@@ -50,10 +48,10 @@ impl Yin {
         Some(frequency)
     }
 
-    fn difference_function(frame: &[f64], tau_max: usize) -> Vec<f64> {
-        let mut differences = vec![0.; tau_max];
-        for tau in 1..tau_max {
-            for i in 0..frame.len() - tau_max {
+    fn difference_function(&self, frame: &[f64]) -> Vec<f64> {
+        let mut differences = vec![0.; self.tau_max];
+        for tau in 1..self.tau_max {
+            for i in 0..frame.len() - self.tau_max {
                 let delta = frame[i] - frame[i + tau];
                 differences[tau] += delta * delta;
             }

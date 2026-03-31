@@ -1,8 +1,13 @@
-mod audio;
-
+use std::fmt::Display;
 use std::time::Duration;
 
-use cpal::traits::HostTrait;
+mod audio;
+
+use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::{DeviceId, default_host};
+use iced::futures::StreamExt;
+use iced::futures::channel::mpsc;
+use iced::widget::pick_list;
 use iced::{
     Element, Subscription,
     futures::{SinkExt, Stream},
@@ -10,7 +15,36 @@ use iced::{
     widget::{self, column, row},
 };
 
+#[derive(Clone, Debug, PartialEq)]
+struct DeviceRepresentation {
+    id: DeviceId,
+    name: String,
+}
+
+impl Display for DeviceRepresentation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl DeviceRepresentation {
+    fn new(id: DeviceId, name: String) -> Self {
+        Self { id, name }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn id(&self) -> &DeviceId {
+        &self.id
+    }
+}
+
 struct State {
+    input_devices: Vec<DeviceRepresentation>,
+    device: Option<DeviceRepresentation>,
+    device_sender: Option<mpsc::Sender<DeviceRepresentation>>,
     frequency: f64,
     theme: iced::Theme,
 }
@@ -18,11 +52,17 @@ struct State {
 #[derive(Clone)]
 enum Message {
     FrequencyChange(f64),
+    GetInputDevices,
+    SubscriptionSetup(mpsc::Sender<DeviceRepresentation>),
+    InputDeviceChanged(DeviceRepresentation),
 }
 
 impl State {
     fn new() -> Self {
         Self {
+            input_devices: Vec::new(),
+            device: None,
+            device_sender: None,
             frequency: 0.,
             theme: iced::Theme::GruvboxDark,
         }
@@ -31,6 +71,18 @@ impl State {
     fn update(&mut self, message: Message) {
         match message {
             Message::FrequencyChange(frequency) => self.frequency = frequency,
+            Message::GetInputDevices => {
+                self.input_devices = self.get_input_devices();
+                // println!("Got input devices {:?}", self.input_devices);
+            }
+            Message::SubscriptionSetup(sender) => self.device_sender = Some(sender),
+            Message::InputDeviceChanged(device) => {
+                println!("Device selected {}", device.name());
+                self.device = Some(device.clone());
+                if let Some(sender) = &mut self.device_sender {
+                    _ = sender.try_send(device);
+                }
+            }
         }
     }
 
@@ -42,36 +94,72 @@ impl State {
         let note = pitch.note();
         let octave = pitch.octave();
 
+        let input_device_picklist =
+            pick_list(self.input_devices.clone(), self.device.as_ref(), |device| {
+                Message::InputDeviceChanged(device)
+            })
+            .placeholder("Select input device")
+            .on_open(Message::GetInputDevices);
+
         let note_text = widget::text(note.to_string());
         let octave_text = widget::text(octave).size(24);
         let pitch_info = row!["Pitch: ", note_text, octave_text].align_y(iced::Bottom);
 
-        column![frequency_text, pitch_info].into()
+        column![row![frequency_text, pitch_info], input_device_picklist].into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::run(Self::spawn_frequency_detection_stream)
     }
 
+    fn get_input_devices(&self) -> Vec<DeviceRepresentation> {
+        let host = default_host();
+        host.input_devices()
+            .unwrap()
+            .filter_map(|device| {
+                let description = device.description().ok()?;
+                if description.driver()?.starts_with("plughw:") {
+                    return Some(DeviceRepresentation::new(
+                        device.id().ok()?,
+                        description.name().to_string(),
+                    ));
+                }
+                None
+            })
+            .collect()
+    }
+
     /// Iced subscription method, sends PitchChange messages when it detects a pitch.
     fn spawn_frequency_detection_stream() -> impl Stream<Item = Message> {
-        stream::channel(100, async |mut output| {
-            let host = cpal::default_host();
-            let device = host.default_input_device().unwrap();
+        stream::channel(100, async move |mut output| {
+            let (sender, mut receiver) = mpsc::channel(1);
+            _ = output.send(Message::SubscriptionSetup(sender)).await;
 
             // TODO: currently arbitrary
             let min_freq = 60.;
             let max_freq = 1000.;
             let threshold = 0.10;
             let buffer_size = 1 << 8;
-            let handle = audio::FrequencyDetector::new(min_freq, max_freq, threshold, buffer_size)
-                .start_best_config(device);
+            let detector =
+                audio::FrequencyDetector::new(min_freq, max_freq, threshold, buffer_size);
+            let mut handle = None;
 
             loop {
+                if let Ok(device) = receiver.try_recv() {
+                    println!("Got device: {}", device);
+                    let device = default_host().device_by_id(&device.id()).unwrap();
+                    handle = detector
+                        .start_best_config(device)
+                        .map_err(|e| eprintln!("Failed to build stream, got error {e:?}"))
+                        .ok();
+                }
+
                 // Not sleeping makes the repeated sending effectively block
                 tokio::time::sleep(Duration::from_millis(10)).await;
-                let frequency = handle.frequency();
-                _ = output.send(Message::FrequencyChange(frequency)).await;
+                if let Some(handle) = &handle {
+                    let frequency = handle.frequency();
+                    _ = output.send(Message::FrequencyChange(frequency)).await;
+                }
             }
         })
     }

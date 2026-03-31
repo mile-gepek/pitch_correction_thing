@@ -49,11 +49,8 @@ impl Yin {
         assert!(frame.len() >= self.tau_max);
         let differences = self.difference_function(&frame);
         let cmndf = Self::cmndf(&differences);
-        let Some(tau_star) =
-            Self::absolute_threshold(&cmndf, self.tau_min, self.tau_max, self.threshold)
-        else {
-            return None;
-        };
+        let tau_star =
+            Self::absolute_threshold(&cmndf, self.tau_min, self.tau_max, self.threshold)?;
         let tau_interpolated = Self::parabolic_interpolation(&cmndf, tau_star);
         let frequency = self.sample_rate as f64 / tau_interpolated;
         Some(frequency)
@@ -124,11 +121,10 @@ impl Yin {
 
 #[cfg(test)]
 mod tests {
+    use autotune_rs::assert_nearly_equal;
     use std::f64::consts::TAU;
 
     use super::Yin;
-
-    use crate::assert_nearly_equal;
 
     fn generate_sin(sample_rate: u32, frequency: f64, sample_count: usize) -> Vec<f64> {
         let step = TAU * frequency / sample_rate as f64;

@@ -3,7 +3,7 @@
 mod yin;
 use self::yin::Yin;
 mod pitch;
-pub use pitch::{Note, Pitch};
+pub use pitch::Pitch;
 
 use atomic_float::AtomicF64;
 use cpal::{
@@ -14,6 +14,7 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
     traits::{Consumer, Producer, Split},
 };
+use tracing;
 
 use std::{
     sync::{
@@ -49,19 +50,25 @@ impl FrequencyDetector {
     /// # Panics
     ///
     /// Panics if the device is not an input device.
+    ///
+    /// Panics if spawning the frequency detection thread fails.
     pub fn start_best_config(
         self,
         device: Device,
     ) -> Result<FrequencyDetectorHandle, BuildStreamError> {
-        let config_range = device.supported_input_configs().unwrap();
-        let config = device.default_output_config().unwrap();
+        let config = device
+            .default_output_config()
+            .inspect_err(|e| {
+                tracing::error!(
+                    "Got error while getting default config for device {}: {e}",
+                    device.id().unwrap()
+                )
+            })
+            .unwrap();
         let sample_format = config.sample_format();
         let mut config = config.config();
         config.buffer_size = cpal::BufferSize::Fixed(self.buffer_size as u32);
         config.channels = 1;
-        // dbg!(&config.sample_rate);
-        // dbg!(&config);
-        // dbg!(&sample_format);
 
         let yin = Yin::new(
             config.sample_rate,
@@ -78,9 +85,13 @@ impl FrequencyDetector {
             sample_format,
             sample_producer,
             sample_signal,
-        )?;
+        )
+        .inspect_err(|e| tracing::error!("Failed to build stream, got error: {e}"))?;
 
-        stream.play().unwrap();
+        // TODO: return an error on stream fail
+        stream
+            .play()
+            .expect("If playing the stream fails the device is disconnected");
         Ok(FrequencyDetectorHandle::new(frequency, thread, stream))
     }
 }
@@ -120,6 +131,7 @@ fn frequency_detection_thread(
     let (signal_sender, signal_reader) = mpsc::sync_channel(0);
 
     let frame_size = yin.minimum_frame_size();
+    tracing::debug!("Yin expecting minimum frame size {frame_size}");
     let mut frame = vec![0.; frame_size];
     // TODO: this thread handle should be stored somewhere along with the stream,
     // if one dies, the other should too.
@@ -128,7 +140,7 @@ fn frequency_detection_thread(
     let thread = thread::Builder::new()
         .name("pitch detection".into())
         .spawn(move || {
-            println!("Starting frequency detection thread");
+            tracing::debug!("Starting frequency detection thread");
             let mut i = 0;
             loop {
                 if signal_reader.recv().is_err() {
@@ -147,9 +159,9 @@ fn frequency_detection_thread(
                 }
                 thread::sleep(Duration::from_millis(4));
             }
-            println!("Exiting frequency thread")
+            tracing::debug!("Exiting frequency detection thread")
         })
-        .unwrap();
+        .expect("We have other things to worry about if spawning a thread fails");
 
     (frequency_cloned, signal_sender, thread)
 }
@@ -228,7 +240,7 @@ where
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             read_audio(data, &mut sample_buffer, channels, &sample_signal)
         },
-        |e| todo!("Got stream callback error: {e:?}"),
+        |e| tracing::error!("Got stream callback error: {e:?}"),
         None,
     )
 }
@@ -264,6 +276,7 @@ fn read_audio<T>(
 
     #[cfg(debug_assertions)]
     if samples_pushed < sample_count_mono {
-        eprintln!("Consumer fell behind");
+        // Yes I know I shouldn't log in the audio thread, sue me.
+        tracing::debug!("Consumer fell behind");
     }
 }

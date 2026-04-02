@@ -5,7 +5,6 @@ mod audio;
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{DeviceId, default_host};
-use iced::futures::StreamExt;
 use iced::futures::channel::mpsc;
 use iced::widget::pick_list;
 use iced::{
@@ -71,14 +70,12 @@ impl State {
     fn update(&mut self, message: Message) {
         match message {
             Message::FrequencyChange(frequency) => self.frequency = frequency,
-            Message::GetInputDevices => {
-                self.input_devices = self.get_input_devices();
-                // println!("Got input devices {:?}", self.input_devices);
-            }
+            Message::GetInputDevices => self.input_devices = self.get_input_devices(),
             Message::SubscriptionSetup(sender) => self.device_sender = Some(sender),
             Message::InputDeviceChanged(device) => {
-                println!("Device selected {}", device.name());
+                tracing::debug!("Device change");
                 self.device = Some(device.clone());
+                // Send this device to the subscription task, which starts the frequency detection thread
                 if let Some(sender) = &mut self.device_sender {
                     _ = sender.try_send(device);
                 }
@@ -132,6 +129,8 @@ impl State {
     /// Iced subscription method, sends PitchChange messages when it detects a pitch.
     fn spawn_frequency_detection_stream() -> impl Stream<Item = Message> {
         stream::channel(100, async move |mut output| {
+            tracing::debug!("Starting subscription stream");
+
             let (sender, mut receiver) = mpsc::channel(1);
             _ = output.send(Message::SubscriptionSetup(sender)).await;
 
@@ -146,11 +145,19 @@ impl State {
 
             loop {
                 if let Ok(device) = receiver.try_recv() {
-                    println!("Got device: {}", device);
-                    let device = default_host().device_by_id(&device.id()).unwrap();
+                    tracing::debug!("Got device: {}", device);
+                    let Some(device) = default_host().device_by_id(&device.id()) else {
+                        tracing::error!(
+                            "Device {} not found, likely disconnected while starting thread",
+                            device.id()
+                        );
+                        continue;
+                    };
                     handle = detector
                         .start_best_config(device)
-                        .map_err(|e| eprintln!("Failed to build stream, got error {e:?}"))
+                        .map_err(|e| {
+                            tracing::error!("Failed to start frequency detector, got error {e:?}")
+                        })
                         .ok();
                 }
 
@@ -170,6 +177,15 @@ impl State {
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("autotune_rs=debug")),
+        )
+        .init();
+
+    tracing::info!("Starting app");
+
     _ = iced::application(State::new, State::update, State::view)
         .settings(iced::Settings {
             default_text_size: iced::Pixels(32.),

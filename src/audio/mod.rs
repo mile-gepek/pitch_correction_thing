@@ -1,9 +1,10 @@
 //! Module for general audio related logic.
 
 mod yin;
-use self::yin::Yin;
+use yin::Yin;
 mod pitch;
 pub use pitch::Pitch;
+mod td_psola;
 
 use atomic_float::AtomicF64;
 use cpal::{
@@ -30,16 +31,14 @@ pub struct FrequencyDetector {
     min_freq: f64,
     max_freq: f64,
     threshold: f64,
-    buffer_size: usize,
 }
 
 impl FrequencyDetector {
-    pub fn new(min_freq: f64, max_freq: f64, threshold: f64, buffer_size: usize) -> Self {
+    pub fn new(min_freq: f64, max_freq: f64, threshold: f64) -> Self {
         Self {
             min_freq,
             max_freq,
             threshold,
-            buffer_size,
         }
     }
 
@@ -67,8 +66,6 @@ impl FrequencyDetector {
             .unwrap();
         let sample_format = config.sample_format();
         let mut config = config.config();
-        config.buffer_size = cpal::BufferSize::Fixed(self.buffer_size as u32);
-        config.channels = 1;
 
         let yin = Yin::new(
             config.sample_rate,
@@ -76,8 +73,12 @@ impl FrequencyDetector {
             self.max_freq,
             self.threshold,
         );
+        let buffer_size = yin.minimum_frame_size();
 
-        let (sample_producer, sample_consumer) = HeapRb::new(2 * self.buffer_size).split();
+        config.buffer_size = cpal::BufferSize::Fixed(buffer_size as u32);
+        config.channels = 1;
+
+        let (sample_producer, sample_consumer) = HeapRb::new(buffer_size).split();
         let (frequency, sample_signal, thread) = frequency_detection_thread(yin, sample_consumer);
         let stream = build_stream(
             device,

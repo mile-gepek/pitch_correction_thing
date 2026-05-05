@@ -138,7 +138,9 @@ impl State {
             let min_freq = 60.;
             let max_freq = 1000.;
             let threshold = 0.10;
-            let detector = audio::FrequencyDetector::new(min_freq, max_freq, threshold);
+            let buffer_size = 1 << 8;
+            let detector =
+                audio::FrequencyDetector::new(min_freq, max_freq, threshold, buffer_size);
             let mut handle = None;
 
             loop {
